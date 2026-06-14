@@ -1,3 +1,4 @@
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 
@@ -7,8 +8,13 @@ from decouple import config
 from .models import Panel
 from .xui import PanelError, lookup, normalize_query
 
+logger = logging.getLogger("checker")
+
 # Cap on parallel panel requests so a huge panel list can't exhaust threads.
 MAX_WORKERS = 12
+
+# Hard limit on user input length to avoid abuse.
+MAX_QUERY_LEN = 512
 
 
 def _env_panel():
@@ -48,6 +54,7 @@ def _query_panels(panels, query):
         try:
             result = lookup(panels[0], query)
         except PanelError as exc:
+            logger.warning("panel lookup failed: %s: %s", panels[0].name, exc)
             return None, [f"{panels[0].name}: {exc}"]
         if result:
             result["panel"] = panels[0].name
@@ -63,6 +70,7 @@ def _query_panels(panels, query):
             try:
                 result = future.result()
             except PanelError as exc:
+                logger.warning("panel lookup failed: %s: %s", panel.name, exc)
                 errors.append(f"{panel.name}: {exc}")
                 continue
             if result:
@@ -78,7 +86,7 @@ def check_config(request):
     if request.method != "POST":
         return render(request, "index.html")
 
-    raw_input = request.POST.get("vless_link", "")
+    raw_input = request.POST.get("vless_link", "")[:MAX_QUERY_LEN]
     query = normalize_query(raw_input)
     if not query:
         return render(request, "index.html", {

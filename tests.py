@@ -26,6 +26,26 @@ class ParseTests(TestCase):
         self.assertEqual(xui.normalize_query("  user@mail  "), "user@mail")
         self.assertIsNone(xui.normalize_query("   "))
 
+    def test_parse_trojan(self):
+        self.assertEqual(
+            xui.normalize_query("trojan://secretpass@1.2.3.4:443#n"), "secretpass"
+        )
+
+    def test_parse_vmess(self):
+        import base64
+        payload = base64.b64encode(
+            json.dumps({"id": "vmess-uuid", "ps": "name"}).encode()
+        ).decode()
+        self.assertEqual(xui.normalize_query("vmess://" + payload), "vmess-uuid")
+
+    def test_parse_ss(self):
+        import base64
+        head = base64.b64encode(b"aes-256-gcm:sspass").decode()
+        self.assertEqual(xui.normalize_query(f"ss://{head}@1.2.3.4:443#n"), "sspass")
+
+    def test_unknown_scheme(self):
+        self.assertIsNone(xui.normalize_query("ftp://something"))
+
     def test_format_bytes(self):
         self.assertEqual(xui.format_bytes(1024 ** 3), 1.0)
         self.assertEqual(xui.format_bytes("bad"), 0)
@@ -46,6 +66,17 @@ class FindClientTests(TestCase):
         self.assertEqual(res["username"], "ali")
         self.assertEqual(res["total"], 2.0)
         self.assertEqual(res["used"], 1.0)
+        self.assertEqual(res["remaining_volume"], 1.0)
+        self.assertEqual(res["percent"], 50)
+
+    def test_find_by_password(self):
+        inbounds = [{
+            "clientStats": [{"email": "ali", "total": 0, "up": 0, "down": 0}],
+            "settings": json.dumps({"clients": [{"password": "pw-1", "email": "ali"}]}),
+        }]
+        res = xui.find_client(inbounds, "pw-1")
+        self.assertIsNotNone(res)
+        self.assertEqual(res["username"], "ali")
 
     def test_find_by_email_case_insensitive(self):
         inbounds = _make_inbounds("u-1", "Ali")
@@ -53,7 +84,10 @@ class FindClientTests(TestCase):
 
     def test_unlimited_total(self):
         inbounds = _make_inbounds("u-1", "ali", total=0)
-        self.assertEqual(xui.find_client(inbounds, "u-1")["total"], "نامحدود")
+        res = xui.find_client(inbounds, "u-1")
+        self.assertEqual(res["total"], "نامحدود")
+        self.assertEqual(res["remaining_volume"], "نامحدود")
+        self.assertIsNone(res["percent"])
 
     def test_not_found(self):
         inbounds = _make_inbounds("u-1", "ali")

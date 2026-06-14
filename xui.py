@@ -10,14 +10,19 @@ Design notes (the app runs on a server inside Iran):
   objects, so it is safe to use from multiple threads concurrently.
 """
 
+import base64
+import binascii
 import hashlib
 import json
+import logging
 import threading
 import time
 from urllib.parse import urlparse
 
 import requests
 import urllib3
+
+logger = logging.getLogger("checker")
 
 # Panels almost always run with self-signed certificates. When a panel opts
 # out of verification we silence the noisy per-request warning once.
@@ -41,38 +46,95 @@ class PanelAuthError(PanelError):
     """
 
 
+def _b64decode(data):
+    """Forgiving base64 decode (handles missing padding and url-safe)."""
+    data = data.strip()
+    data += "=" * (-len(data) % 4)
+    try:
+        return base64.urlsafe_b64decode(data).decode("utf-8", "ignore")
+    except (binascii.Error, ValueError):
+        return ""
+
+
+def _userinfo(link):
+    """Return the userinfo part (before @) of a URL-style link."""
+    try:
+        parsed = urlparse(link)
+        if parsed.username:
+            return parsed.username.strip()
+    except (ValueError, IndexError):
+        pass
+    # Fallback for links urlparse can't fully decompose.
+    try:
+        return link.split("://", 1)[1].split("@", 1)[0].split("?", 1)[0].strip() or None
+    except IndexError:
+        return None
+
+
 def parse_vless(link):
     """Extract the client UUID from a vless:// link.
 
     Returns ``None`` if the input is not a recognisable vless link.
     """
-    if not link:
+    if not link or not link.strip().startswith("vless://"):
         return None
-    link = link.strip()
-    if not link.startswith("vless://"):
+    return _userinfo(link.strip())
+
+
+def _parse_vmess(link):
+    """vmess:// links are base64-encoded JSON; the client id lives in ``id``."""
+    payload = link.strip()[len("vmess://"):]
+    decoded = _b64decode(payload)
+    if not decoded:
         return None
     try:
-        parsed = urlparse(link)
-        uuid = parsed.username
-        if uuid:
-            return uuid.strip()
-        # Fallback for links that urlparse can't fully decompose.
-        return link.split("://", 1)[1].split("@", 1)[0].split("?", 1)[0].strip() or None
-    except (ValueError, IndexError):
+        obj = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError):
         return None
+    return (obj.get("id") or "").strip() or None
+
+
+def _parse_ss(link):
+    """shadowsocks: ss://base64(method:password)@host -> password (best effort)."""
+    body = link.strip()[len("ss://"):].split("#", 1)[0]
+    head = body.split("@", 1)[0]
+    decoded = _b64decode(head) or head
+    if ":" in decoded:
+        return decoded.split(":", 1)[1].strip() or None
+    return decoded.strip() or None
+
+
+def parse_link(link):
+    """Extract the lookup identifier from any supported config link.
+
+    Supports vless (uuid), vmess (uuid), trojan (password) and ss (password).
+    Returns ``None`` for unknown/invalid links.
+    """
+    link = link.strip()
+    scheme = link.split("://", 1)[0].lower()
+    if scheme == "vless":
+        return parse_vless(link)
+    if scheme == "vmess":
+        return _parse_vmess(link)
+    if scheme == "trojan":
+        return _userinfo(link)
+    if scheme == "ss":
+        return _parse_ss(link)
+    return None
 
 
 def normalize_query(raw):
     """Turn user input into a search term.
 
-    Accepts a full vless link, a bare UUID, or an email/username and returns
-    the value to match against ``client.id`` or ``client.email``.
+    Accepts a config link (vless/vmess/trojan/ss), a bare UUID, or an
+    email/username and returns the value to match against ``client.id``,
+    ``client.email`` or ``client.password``.
     """
     if not raw:
         return None
     raw = raw.strip()
-    if raw.startswith("vless://"):
-        return parse_vless(raw)
+    if "://" in raw:
+        return parse_link(raw)
     return raw or None
 
 
@@ -119,7 +181,8 @@ def _login_cookies(panel, timeout):
             verify=panel.verify_ssl,
         )
     except requests.exceptions.RequestException as exc:
-        raise PanelError(f"عدم دسترسی به پنل: {exc}") from exc
+        logger.warning("login failed for %s: %s", panel.base_url, exc)
+        raise PanelError("عدم دسترسی به پنل") from exc
 
     try:
         ok = res.json().get("success")
@@ -170,7 +233,8 @@ def _fetch_inbounds(panel, cookies, timeout):
             verify=panel.verify_ssl,
         )
     except requests.exceptions.RequestException as exc:
-        raise PanelError(f"خطا در دریافت اطلاعات: {exc}") from exc
+        logger.warning("inbound fetch failed for %s: %s", panel.base_url, exc)
+        raise PanelError("خطا در دریافت اطلاعات از پنل") from exc
 
     try:
         data = res.json()
@@ -204,20 +268,35 @@ def find_client(inbounds, query):
         for client in clients:
             cid = (client.get("id") or "")
             email = client.get("email") or ""
-            if cid == query or email.lower() == query_lower:
+            password = (client.get("password") or "")
+            if cid == query or password == query or email.lower() == query_lower:
                 expiry_time = client.get("expiryTime", 0)
                 stat = next(
                     (s for s in client_stats if (s.get("email") or "") == email),
                     {},
                 )
-                total = stat.get("total", 0)
-                used = stat.get("up", 0) + stat.get("down", 0)
-                return {
+                total = stat.get("total", 0) or 0
+                used = (stat.get("up", 0) or 0) + (stat.get("down", 0) or 0)
+
+                if total and total > 0:
+                    remaining_bytes = max(total - used, 0)
+                    result = {
+                        "total": format_bytes(total),
+                        "remaining_volume": format_bytes(remaining_bytes),
+                        "percent": min(int(used * 100 / total), 100),
+                    }
+                else:
+                    result = {
+                        "total": "نامحدود",
+                        "remaining_volume": "نامحدود",
+                        "percent": None,
+                    }
+                result.update({
                     "username": email or cid,
-                    "total": format_bytes(total) if total and total > 0 else "نامحدود",
                     "used": format_bytes(used),
                     "remaining_time": _days_remaining(expiry_time),
-                }
+                })
+                return result
     return None
 
 
