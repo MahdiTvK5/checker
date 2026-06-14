@@ -2,9 +2,17 @@
 
 Encapsulates login + inbound lookup so the view layer stays thin and the
 multi-panel logic can reuse a single, well-tested code path.
+
+Design notes (the app runs on a server inside Iran):
+- No external/CDN dependency is needed here; only HTTP calls to the panels.
+- Login cookies are cached per panel (with a TTL) so we don't re-login on
+  every request. The cache stores plain cookie dicts, not ``Session``
+  objects, so it is safe to use from multiple threads concurrently.
 """
 
+import hashlib
 import json
+import threading
 import time
 from urllib.parse import urlparse
 
@@ -15,9 +23,22 @@ import urllib3
 # out of verification we silence the noisy per-request warning once.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# How long a cached login cookie is trusted before we re-login (seconds).
+SESSION_TTL = 3600
+
+_session_cache = {}
+_cache_lock = threading.Lock()
+
 
 class PanelError(Exception):
     """Raised when a panel cannot be reached or returns an error."""
+
+
+class PanelAuthError(PanelError):
+    """Raised when the panel response looks like an expired/failed login.
+
+    Used to trigger a single re-login + retry before giving up.
+    """
 
 
 def parse_vless(link):
@@ -73,14 +94,29 @@ def _days_remaining(expiry_time):
     return f"{days} روز"
 
 
-def login(session, base_url, username, password, verify_ssl, timeout):
-    login_url = f"{base_url}/login"
+# --------------------------------------------------------------------------
+# Login session (cookie) cache
+# --------------------------------------------------------------------------
+
+def _cache_key(panel):
+    """Stable key per (url, username, password).
+
+    Password is hashed so a credential change invalidates the cache without
+    keeping the secret around as a dict key.
+    """
+    raw = f"{panel.base_url}|{panel.username}|{panel.password}".encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _login_cookies(panel, timeout):
+    """Perform a login and return the resulting cookie dict."""
+    login_url = f"{panel.base_url}/login"
     try:
-        res = session.post(
+        res = requests.post(
             login_url,
-            data={"username": username, "password": password},
+            data={"username": panel.username, "password": panel.password},
             timeout=timeout,
-            verify=verify_ssl,
+            verify=panel.verify_ssl,
         )
     except requests.exceptions.RequestException as exc:
         raise PanelError(f"عدم دسترسی به پنل: {exc}") from exc
@@ -93,19 +129,57 @@ def login(session, base_url, username, password, verify_ssl, timeout):
     if not ok:
         raise PanelError("نام کاربری یا رمز عبور پنل نادرست است")
 
+    return requests.utils.dict_from_cookiejar(res.cookies)
 
-def fetch_inbounds(session, base_url, verify_ssl, timeout):
-    stats_url = f"{base_url}/panel/api/inbounds/list"
+
+def get_cookies(panel, timeout, force=False):
+    """Return valid login cookies for ``panel``, using the cache when possible."""
+    key = _cache_key(panel)
+    now = time.time()
+
+    if not force:
+        with _cache_lock:
+            entry = _session_cache.get(key)
+            if entry and entry[1] > now:
+                return entry[0]
+
+    cookies = _login_cookies(panel, timeout)
+    with _cache_lock:
+        _session_cache[key] = (cookies, now + SESSION_TTL)
+    return cookies
+
+
+def clear_session_cache():
+    """Drop all cached login cookies (useful for tests / forced refresh)."""
+    with _cache_lock:
+        _session_cache.clear()
+
+
+def _fetch_inbounds(panel, cookies, timeout):
+    """Fetch the inbound list using cached cookies.
+
+    Raises :class:`PanelAuthError` when the response looks like a login
+    redirect / expired session so the caller can re-login and retry.
+    """
+    stats_url = f"{panel.base_url}/panel/api/inbounds/list"
     try:
-        res = session.get(stats_url, timeout=timeout, verify=verify_ssl)
-        data = res.json()
+        res = requests.get(
+            stats_url,
+            cookies=cookies,
+            timeout=timeout,
+            verify=panel.verify_ssl,
+        )
     except requests.exceptions.RequestException as exc:
         raise PanelError(f"خطا در دریافت اطلاعات: {exc}") from exc
+
+    try:
+        data = res.json()
     except (ValueError, json.JSONDecodeError):
-        raise PanelError("پاسخ نامعتبر هنگام دریافت لیست inbound ها")
+        # Most likely the panel returned the HTML login page -> session expired.
+        raise PanelAuthError("نشست منقضی شده است")
 
     if not data.get("success"):
-        raise PanelError("سرور در دریافت اطلاعات خطا داد")
+        raise PanelAuthError("سرور در دریافت اطلاعات خطا داد")
     return data.get("obj", [])
 
 
@@ -152,9 +226,15 @@ def lookup(panel, query, timeout=8):
 
     ``panel`` must expose ``base_url``, ``username``, ``password`` and
     ``verify_ssl`` attributes (the :class:`~checker.models.Panel` model or a
-    simple namespace both work). Raises :class:`PanelError` on failure.
+    simple namespace both work). Uses cached login cookies and re-logs in once
+    if the session turns out to be expired. Raises :class:`PanelError` on
+    failure.
     """
-    session = requests.Session()
-    login(session, panel.base_url, panel.username, panel.password, panel.verify_ssl, timeout)
-    inbounds = fetch_inbounds(session, panel.base_url, panel.verify_ssl, timeout)
+    cookies = get_cookies(panel, timeout)
+    try:
+        inbounds = _fetch_inbounds(panel, cookies, timeout)
+    except PanelAuthError:
+        # Cached cookies were stale -> force a fresh login and retry once.
+        cookies = get_cookies(panel, timeout, force=True)
+        inbounds = _fetch_inbounds(panel, cookies, timeout)
     return find_client(inbounds, query)

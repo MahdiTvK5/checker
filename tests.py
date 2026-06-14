@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 from unittest import mock
 
+import requests
 from django.test import TestCase
 
 from . import views, xui
@@ -95,3 +96,48 @@ class MultiPanelViewTests(TestCase):
     def test_empty_input_rejected(self):
         res = self.client.post("/", {"vless_link": "   "})
         self.assertContains(res, "ورودی نامعتبر")
+
+
+def _panel_ns():
+    return SimpleNamespace(
+        name="P", base_url="http://p", username="u", password="pw", verify_ssl=False
+    )
+
+
+def _login_resp():
+    resp = mock.Mock()
+    resp.json.return_value = {"success": True}
+    resp.cookies = requests.cookies.cookiejar_from_dict({"session": "abc"})
+    return resp
+
+
+def _list_resp(uuid="u-1", email="ali"):
+    resp = mock.Mock()
+    resp.json.return_value = {"success": True, "obj": _make_inbounds(uuid, email)}
+    return resp
+
+
+class SessionCacheTests(TestCase):
+    def setUp(self):
+        xui.clear_session_cache()
+        self.addCleanup(xui.clear_session_cache)
+
+    def test_login_cookies_are_cached(self):
+        panel = _panel_ns()
+        with mock.patch.object(xui.requests, "post", return_value=_login_resp()) as post, \
+                mock.patch.object(xui.requests, "get", return_value=_list_resp()):
+            self.assertIsNotNone(xui.lookup(panel, "u-1"))
+            self.assertIsNotNone(xui.lookup(panel, "u-1"))
+        # Second lookup must reuse cached cookies -> only one login.
+        self.assertEqual(post.call_count, 1)
+
+    def test_relogin_on_expired_session(self):
+        panel = _panel_ns()
+        expired = mock.Mock()
+        expired.json.side_effect = ValueError("html login page")
+        with mock.patch.object(xui.requests, "post", return_value=_login_resp()) as post, \
+                mock.patch.object(xui.requests, "get", side_effect=[expired, _list_resp()]):
+            result = xui.lookup(panel, "u-1")
+        self.assertEqual(result["username"], "ali")
+        # Initial login + one forced re-login after the stale session.
+        self.assertEqual(post.call_count, 2)

@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 
 from django.shortcuts import render
@@ -5,6 +6,9 @@ from decouple import config
 
 from .models import Panel
 from .xui import PanelError, lookup, normalize_query
+
+# Cap on parallel panel requests so a huge panel list can't exhaust threads.
+MAX_WORKERS = 12
 
 
 def _env_panel():
@@ -33,6 +37,43 @@ def _get_panels():
     return [env_panel] if env_panel else []
 
 
+def _query_panels(panels, query):
+    """Query every panel concurrently and return ``(result, errors)``.
+
+    Returns as soon as the first panel reports a match (remaining requests are
+    cancelled). ``errors`` only matters when nothing is found.
+    """
+    if len(panels) == 1:
+        # No need to spin up a thread pool for a single panel.
+        try:
+            result = lookup(panels[0], query)
+        except PanelError as exc:
+            return None, [f"{panels[0].name}: {exc}"]
+        if result:
+            result["panel"] = panels[0].name
+            return result, []
+        return None, []
+
+    errors = []
+    executor = ThreadPoolExecutor(max_workers=min(len(panels), MAX_WORKERS))
+    try:
+        futures = {executor.submit(lookup, p, query): p for p in panels}
+        for future in as_completed(futures):
+            panel = futures[future]
+            try:
+                result = future.result()
+            except PanelError as exc:
+                errors.append(f"{panel.name}: {exc}")
+                continue
+            if result:
+                result["panel"] = panel.name
+                return result, errors
+        return None, errors
+    finally:
+        # Don't block on slow/cancelled panels once we're done.
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
 def check_config(request):
     if request.method != "POST":
         return render(request, "index.html")
@@ -52,18 +93,10 @@ def check_config(request):
             "vless_link": raw_input,
         })
 
-    errors = []
-    for panel in panels:
-        try:
-            result = lookup(panel, query)
-        except PanelError as exc:
-            errors.append(f"{panel.name}: {exc}")
-            continue
-        if result:
-            result["panel"] = panel.name
-            return render(request, "index.html", {"result": result})
+    result, errors = _query_panels(panels, query)
+    if result:
+        return render(request, "index.html", {"result": result})
 
-    # Not found on any reachable panel.
     if errors and len(errors) == len(panels):
         # Every panel failed to respond – surface the connection problems.
         return render(request, "index.html", {
