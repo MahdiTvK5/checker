@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>استعلام کانفیگ</title>
+    <style>
+        :root { --bg:#0f172a; --card:#1e293b; --accent:#38bdf8; --text:#e2e8f0; --muted:#94a3b8; --danger:#f87171; --ok:#34d399; }
+        * { box-sizing: border-box; }
+        body {
+            font-family: Tahoma, "Segoe UI", sans-serif;
+            background: var(--bg); color: var(--text); margin: 0;
+            min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px;
+        }
+        .card {
+            background: var(--card); width: 100%; max-width: 460px; padding: 28px;
+            border-radius: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.4);
+        }
+        h1 { font-size: 1.4rem; margin: 0 0 6px; text-align: center; }
+        p.sub { color: var(--muted); text-align: center; margin: 0 0 22px; font-size: .85rem; }
+        input[type=text] {
+            width: 100%; padding: 13px 14px; border-radius: 10px; border: 1px solid #334155;
+            background: #0b1220; color: var(--text); font-size: .95rem; text-align: left; direction: ltr;
+        }
+        button {
+            width: 100%; margin-top: 14px; padding: 13px; border: 0; border-radius: 10px;
+            background: var(--accent); color: #042130; font-weight: bold; font-size: 1rem; cursor: pointer;
+        }
+        button:hover { filter: brightness(1.05); }
+        .alert { margin-top: 18px; padding: 13px 14px; border-radius: 10px; font-size: .9rem; }
+        .alert.error { background: rgba(248,113,113,.12); border: 1px solid var(--danger); color: #fecaca; }
+        .alert.error ul { margin: 8px 0 0; padding-right: 18px; }
+        .result { margin-top: 20px; border-top: 1px solid #334155; padding-top: 16px; }
+        .row { display: flex; justify-content: space-between; padding: 9px 0; border-bottom: 1px dashed #334155; }
+        .row:last-child { border-bottom: 0; }
+        .row .label { color: var(--muted); }
+        .row .value { font-weight: bold; }
+        .value.ok { color: var(--ok); }
+        .bar { margin-top: 14px; background: #0b1220; border-radius: 999px; height: 10px; overflow: hidden; }
+        .bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--ok), var(--accent)); }
+        .bar.high > span { background: linear-gradient(90deg, #fbbf24, var(--danger)); }
+        .percent { text-align: center; color: var(--muted); font-size: .8rem; margin-top: 6px; }
+        button:disabled { opacity: .6; cursor: progress; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>استعلام وضعیت کانفیگ</h1>
+        <p class="sub">لینک vless، UUID یا ایمیل کانفیگ را وارد کنید</p>
+
+        <form method="post" id="lookup-form">
+            {% csrf_token %}
+            <input type="text" name="vless_link" placeholder="vless:// vmess:// trojan:// یا UUID/email"
+                   value="{{ vless_link|default:'' }}" autocomplete="off" maxlength="512">
+            <button type="submit" id="submit-btn">استعلام</button>
+        </form>
+
+        {% if error %}
+        <div class="alert error">
+            {{ error }}
+            {% if panel_errors %}
+            <ul>
+                {% for e in panel_errors %}<li>{{ e }}</li>{% endfor %}
+            </ul>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        {% if result %}
+        <div class="result">
+            <div class="row"><span class="label">نام کاربر</span><span class="value">{{ result.username }}</span></div>
+            {% if result.panel %}
+            <div class="row"><span class="label">پنل</span><span class="value">{{ result.panel }}</span></div>
+            {% endif %}
+            <div class="row"><span class="label">حجم کل</span><span class="value">{{ result.total }}{% if result.total != 'نامحدود' %} GB{% endif %}</span></div>
+            <div class="row"><span class="label">حجم مصرفی</span><span class="value">{{ result.used }} GB</span></div>
+            <div class="row"><span class="label">حجم باقی‌مانده</span><span class="value ok">{{ result.remaining_volume }}{% if result.remaining_volume != 'نامحدود' %} GB{% endif %}</span></div>
+            <div class="row"><span class="label">زمان باقی‌مانده</span><span class="value ok">{{ result.remaining_time }}</span></div>
+            {% if result.percent is not None %}
+            <div class="bar {% if result.percent >= 80 %}high{% endif %}"><span style="width: {{ result.percent }}%"></span></div>
+            <div class="percent">{{ result.percent }}% مصرف شده</div>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        document.getElementById('lookup-form').addEventListener('submit', function () {
+            var btn = document.getElementById('submit-btn');
+            btn.disabled = true;
+            btn.textContent = 'در حال استعلام...';
+        });
+    </script>
+</body>
+</html>
