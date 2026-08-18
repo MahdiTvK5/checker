@@ -234,6 +234,11 @@ class MultiPanelViewTests(TestCase):
     def test_healthz(self):
         self.assertContains(self.client.get("/healthz"), "ok")
 
+    def test_admin_login_page_loads(self):
+        res = self.client.get("/admin/login/")
+        self.assertEqual(res.status_code, 200)
+        self.assertContains(res, "static/admin")
+
     def test_password_is_encrypted_at_rest(self):
         self.assertTrue(self.p1.password.startswith("enc:"))
         self.assertEqual(decrypt_password(self.p1.password), "b")

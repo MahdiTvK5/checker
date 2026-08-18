@@ -2,6 +2,8 @@
 
 ابزار وب برای استعلام وضعیت کانفیگ (حجم مصرفی، حجم باقی‌مانده و زمان انقضا) از روی **چند پنل X-UI / 3x-ui** به‌صورت هم‌زمان.
 
+> ظاهر جدید و نصب کامل روی برنچ `cursor/multi-panel-checker-2b4f` است. اگر `main` را کلون کنید هنوز کد قدیمی را می‌بینید.
+
 ## ویژگی‌ها
 - پشتیبانی از **چند پنل** (Multi-Panel) با مدیریت از طریق پنل ادمین جنگو.
 - **استعلام موازی** همهٔ پنل‌ها و بازگشت سریع اولین نتیجه.
@@ -19,7 +21,7 @@
 فقط کافی است یک‌بار کلون کنید و اسکریپت نصب را اجرا کنید:
 
 ```bash
-git clone https://github.com/MahdiTvK5/checker.git checker
+git clone -b cursor/multi-panel-checker-2b4f https://github.com/MahdiTvK5/checker.git checker
 cd checker
 chmod +x install.sh update.sh run.sh
 ./install.sh
