@@ -17,18 +17,15 @@ import json
 import logging
 import threading
 import time
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 import requests
 import urllib3
 
 logger = logging.getLogger("checker")
 
-# Panels almost always run with self-signed certificates. When a panel opts
-# out of verification we silence the noisy per-request warning once.
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# How long a cached login cookie is trusted before we re-login (seconds).
 SESSION_TTL = 3600
 
 _session_cache = {}
@@ -40,10 +37,7 @@ class PanelError(Exception):
 
 
 class PanelAuthError(PanelError):
-    """Raised when the panel response looks like an expired/failed login.
-
-    Used to trigger a single re-login + retry before giving up.
-    """
+    """Raised when the panel response looks like an expired/failed login."""
 
 
 def _b64decode(data):
@@ -61,10 +55,9 @@ def _userinfo(link):
     try:
         parsed = urlparse(link)
         if parsed.username:
-            return parsed.username.strip()
+            return unquote(parsed.username).strip()
     except (ValueError, IndexError):
         pass
-    # Fallback for links urlparse can't fully decompose.
     try:
         return link.split("://", 1)[1].split("@", 1)[0].split("?", 1)[0].strip() or None
     except IndexError:
@@ -72,17 +65,12 @@ def _userinfo(link):
 
 
 def parse_vless(link):
-    """Extract the client UUID from a vless:// link.
-
-    Returns ``None`` if the input is not a recognisable vless link.
-    """
     if not link or not link.strip().startswith("vless://"):
         return None
     return _userinfo(link.strip())
 
 
 def _parse_vmess(link):
-    """vmess:// links are base64-encoded JSON; the client id lives in ``id``."""
     payload = link.strip()[len("vmess://"):]
     decoded = _b64decode(payload)
     if not decoded:
@@ -95,21 +83,22 @@ def _parse_vmess(link):
 
 
 def _parse_ss(link):
-    """shadowsocks: ss://base64(method:password)@host -> password (best effort)."""
+    """Extract the password from SIP002 or legacy ss:// links."""
     body = link.strip()[len("ss://"):].split("#", 1)[0]
-    head = body.split("@", 1)[0]
-    decoded = _b64decode(head) or head
+    if "@" in body:
+        userinfo = body.split("@", 1)[0]
+        decoded = _b64decode(userinfo) or unquote(userinfo)
+    else:
+        decoded = _b64decode(body) or body
+        if "@" in decoded:
+            decoded = decoded.split("@", 1)[0]
+    decoded = unquote(decoded)
     if ":" in decoded:
         return decoded.split(":", 1)[1].strip() or None
     return decoded.strip() or None
 
 
 def parse_link(link):
-    """Extract the lookup identifier from any supported config link.
-
-    Supports vless (uuid), vmess (uuid), trojan (password) and ss (password).
-    Returns ``None`` for unknown/invalid links.
-    """
     link = link.strip()
     scheme = link.split("://", 1)[0].lower()
     if scheme == "vless":
@@ -124,12 +113,6 @@ def parse_link(link):
 
 
 def normalize_query(raw):
-    """Turn user input into a search term.
-
-    Accepts a config link (vless/vmess/trojan/ss), a bare UUID, or an
-    email/username and returns the value to match against ``client.id``,
-    ``client.email`` or ``client.password``.
-    """
     if not raw:
         return None
     raw = raw.strip()
@@ -139,44 +122,65 @@ def normalize_query(raw):
 
 
 def format_bytes(size):
-    """Bytes -> gigabytes rounded to 2 decimals."""
     try:
         return round(int(size) / (1024 ** 3), 2)
     except (TypeError, ValueError):
         return 0
 
 
-def _days_remaining(expiry_time):
+def describe_expiry(expiry_time):
+    """Return ``(text, kind)`` for a 3x-ui ``expiryTime`` value.
+
+    ``kind`` is one of: unlimited, pending, expired, ok, warn.
+    Negative expiryTime means "duration after first connection".
+    """
     if not expiry_time:
-        return "نامحدود"
-    current_time_ms = int(time.time() * 1000)
-    if expiry_time < current_time_ms:
-        return "منقضی شده"
-    days = int((expiry_time - current_time_ms) / (1000 * 60 * 60 * 24))
-    return f"{days} روز"
+        return "نامحدود", "unlimited"
+    try:
+        expiry_time = int(expiry_time)
+    except (TypeError, ValueError):
+        return "نامحدود", "unlimited"
+
+    if expiry_time < 0:
+        ms = abs(expiry_time)
+        days = ms // 86_400_000
+        if days:
+            return f"از اولین اتصال: {days} روز", "pending"
+        hours = max(ms // 3_600_000, 1)
+        return f"از اولین اتصال: {hours} ساعت", "pending"
+
+    remain = expiry_time - int(time.time() * 1000)
+    if remain <= 0:
+        return "منقضی شده", "expired"
+
+    days = remain // 86_400_000
+    hours = (remain % 86_400_000) // 3_600_000
+    minutes = (remain % 3_600_000) // 60_000
+    if days >= 1:
+        kind = "ok" if days > 3 else "warn"
+        if days < 7 and hours:
+            return f"{days} روز و {hours} ساعت", kind
+        return f"{days} روز", kind
+    if hours >= 1:
+        return f"{hours} ساعت", "warn"
+    return f"{max(minutes, 1)} دقیقه", "warn"
 
 
-# --------------------------------------------------------------------------
-# Login session (cookie) cache
-# --------------------------------------------------------------------------
+def _panel_secret(panel):
+    return getattr(panel, "plain_password", None) or panel.password
+
 
 def _cache_key(panel):
-    """Stable key per (url, username, password).
-
-    Password is hashed so a credential change invalidates the cache without
-    keeping the secret around as a dict key.
-    """
-    raw = f"{panel.base_url}|{panel.username}|{panel.password}".encode()
+    raw = f"{panel.base_url}|{panel.username}|{_panel_secret(panel)}".encode()
     return hashlib.sha256(raw).hexdigest()
 
 
 def _login_cookies(panel, timeout):
-    """Perform a login and return the resulting cookie dict."""
     login_url = f"{panel.base_url}/login"
     try:
         res = requests.post(
             login_url,
-            data={"username": panel.username, "password": panel.password},
+            data={"username": panel.username, "password": _panel_secret(panel)},
             timeout=timeout,
             verify=panel.verify_ssl,
         )
@@ -196,12 +200,14 @@ def _login_cookies(panel, timeout):
 
 
 def get_cookies(panel, timeout, force=False):
-    """Return valid login cookies for ``panel``, using the cache when possible."""
     key = _cache_key(panel)
     now = time.time()
 
-    if not force:
-        with _cache_lock:
+    with _cache_lock:
+        stale = [k for k, entry in _session_cache.items() if entry[1] <= now]
+        for k in stale:
+            del _session_cache[k]
+        if not force:
             entry = _session_cache.get(key)
             if entry and entry[1] > now:
                 return entry[0]
@@ -213,17 +219,20 @@ def get_cookies(panel, timeout, force=False):
 
 
 def clear_session_cache():
-    """Drop all cached login cookies (useful for tests / forced refresh)."""
     with _cache_lock:
         _session_cache.clear()
 
 
-def _fetch_inbounds(panel, cookies, timeout):
-    """Fetch the inbound list using cached cookies.
+def _looks_like_login_page(res):
+    ctype = str((getattr(res, "headers", None) or {}).get("Content-Type") or "").lower()
+    if res.status_code in (401, 403):
+        return True
+    if "text/html" in ctype:
+        return True
+    return False
 
-    Raises :class:`PanelAuthError` when the response looks like a login
-    redirect / expired session so the caller can re-login and retry.
-    """
+
+def _fetch_inbounds(panel, cookies, timeout):
     stats_url = f"{panel.base_url}/panel/api/inbounds/list"
     try:
         res = requests.get(
@@ -236,84 +245,152 @@ def _fetch_inbounds(panel, cookies, timeout):
         logger.warning("inbound fetch failed for %s: %s", panel.base_url, exc)
         raise PanelError("خطا در دریافت اطلاعات از پنل") from exc
 
+    if _looks_like_login_page(res):
+        raise PanelAuthError("نشست منقضی شده است")
+
     try:
         data = res.json()
     except (ValueError, json.JSONDecodeError):
-        # Most likely the panel returned the HTML login page -> session expired.
         raise PanelAuthError("نشست منقضی شده است")
 
     if not data.get("success"):
-        raise PanelAuthError("سرور در دریافت اطلاعات خطا داد")
-    return data.get("obj", [])
+        raise PanelError("سرور در دریافت اطلاعات خطا داد")
+
+    obj = data.get("obj")
+    if obj is None:
+        return []
+    if not isinstance(obj, list):
+        raise PanelError("پاسخ نامعتبر از پنل")
+    return obj
+
+
+def _client_matches(client, query, query_lower):
+    cid = client.get("id") or ""
+    email = client.get("email") or ""
+    password = client.get("password") or ""
+    return cid == query or password == query or email.lower() == query_lower
+
+
+def _build_result(username, total, used, expiry_time, enabled):
+    time_text, time_kind = describe_expiry(expiry_time)
+    expired = time_kind == "expired"
+    pending = time_kind == "pending"
+    depleted = False
+
+    if total and total > 0:
+        remaining_bytes = max(total - used, 0)
+        percent = min(int(used * 100 / total), 100)
+        volume = {
+            "total": format_bytes(total),
+            "remaining_volume": format_bytes(remaining_bytes),
+            "percent": percent,
+        }
+        depleted = remaining_bytes == 0 or percent >= 100
+    else:
+        volume = {
+            "total": "نامحدود",
+            "remaining_volume": "نامحدود",
+            "percent": None,
+        }
+
+    if not enabled:
+        status, status_label = "disabled", "غیرفعال"
+    elif expired:
+        status, status_label = "expired", "منقضی شده"
+    elif depleted:
+        status, status_label = "depleted", "حجم تمام شده"
+    elif pending:
+        status, status_label = "pending", "منتظر اولین اتصال"
+    else:
+        status, status_label = "active", "فعال"
+
+    volume_kind = "ok"
+    if volume["percent"] is not None:
+        if volume["percent"] >= 100:
+            volume_kind = "bad"
+        elif volume["percent"] >= 80:
+            volume_kind = "warn"
+
+    result = {
+        "username": username,
+        "used": format_bytes(used),
+        "remaining_time": time_text,
+        "time_kind": time_kind,
+        "status": status,
+        "status_label": status_label,
+        "enabled": enabled,
+        "volume_kind": volume_kind,
+    }
+    result.update(volume)
+    return result
 
 
 def find_client(inbounds, query):
     """Search a panel's inbounds for a client matching ``query``.
 
-    ``query`` is matched (case-insensitively for email) against the client
-    UUID or email. Returns a result dict or ``None``.
+    Traffic from the same client across multiple inbounds is aggregated.
     """
-    if not query:
+    if not query or not isinstance(inbounds, list):
         return None
     query_lower = query.lower()
 
+    total = 0
+    used = 0
+    expiry_time = 0
+    enabled = False
+    username = ""
+    matched = False
+
     for inbound in inbounds:
-        client_stats = inbound.get("clientStats", []) or []
+        if not isinstance(inbound, dict):
+            continue
+        inbound_on = inbound.get("enable", True)
+        client_stats = inbound.get("clientStats") or []
+        if not isinstance(client_stats, list):
+            client_stats = []
         try:
-            settings = json.loads(inbound.get("settings", "{}") or "{}")
-        except (ValueError, json.JSONDecodeError):
+            settings = json.loads(inbound.get("settings") or "{}")
+        except (ValueError, json.JSONDecodeError, TypeError):
             settings = {}
-        clients = settings.get("clients", []) or []
+        if not isinstance(settings, dict):
+            settings = {}
+        clients = settings.get("clients") or []
+        if not isinstance(clients, list):
+            continue
 
         for client in clients:
-            cid = (client.get("id") or "")
+            if not isinstance(client, dict):
+                continue
+            if not _client_matches(client, query, query_lower):
+                continue
+            matched = True
+            cid = client.get("id") or ""
             email = client.get("email") or ""
-            password = (client.get("password") or "")
-            if cid == query or password == query or email.lower() == query_lower:
-                expiry_time = client.get("expiryTime", 0)
-                stat = next(
-                    (s for s in client_stats if (s.get("email") or "") == email),
-                    {},
-                )
-                total = stat.get("total", 0) or 0
-                used = (stat.get("up", 0) or 0) + (stat.get("down", 0) or 0)
+            username = username or email or cid
+            expiry_time = client.get("expiryTime") or expiry_time
+            client_on = client.get("enable", True)
+            if inbound_on and client_on:
+                enabled = True
 
-                if total and total > 0:
-                    remaining_bytes = max(total - used, 0)
-                    result = {
-                        "total": format_bytes(total),
-                        "remaining_volume": format_bytes(remaining_bytes),
-                        "percent": min(int(used * 100 / total), 100),
-                    }
-                else:
-                    result = {
-                        "total": "نامحدود",
-                        "remaining_volume": "نامحدود",
-                        "percent": None,
-                    }
-                result.update({
-                    "username": email or cid,
-                    "used": format_bytes(used),
-                    "remaining_time": _days_remaining(expiry_time),
-                })
-                return result
-    return None
+            stat = next(
+                (s for s in client_stats if isinstance(s, dict) and (s.get("email") or "") == email),
+                {},
+            )
+            quota = stat.get("total") or 0
+            if quota > total:
+                total = quota
+            used += (stat.get("up") or 0) + (stat.get("down") or 0)
+
+    if not matched:
+        return None
+    return _build_result(username, total, used, expiry_time, enabled)
 
 
 def lookup(panel, query, timeout=8):
-    """Look up ``query`` on a single panel-like object.
-
-    ``panel`` must expose ``base_url``, ``username``, ``password`` and
-    ``verify_ssl`` attributes (the :class:`~checker.models.Panel` model or a
-    simple namespace both work). Uses cached login cookies and re-logs in once
-    if the session turns out to be expired. Raises :class:`PanelError` on
-    failure.
-    """
     cookies = get_cookies(panel, timeout)
     try:
         inbounds = _fetch_inbounds(panel, cookies, timeout)
     except PanelAuthError:
-        # Cached cookies were stale -> force a fresh login and retry once.
         cookies = get_cookies(panel, timeout, force=True)
         inbounds = _fetch_inbounds(panel, cookies, timeout)
     return find_client(inbounds, query)

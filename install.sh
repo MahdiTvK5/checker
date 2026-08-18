@@ -51,7 +51,13 @@ if [ ! -f .env ]; then
   cp .env.example .env
   SECRET="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')"
   sed -i "s|^SECRET_KEY=.*|SECRET_KEY=${SECRET}|" .env
-  echo "    فایل .env ساخته شد؛ در صورت نیاز ALLOWED_HOSTS را ویرایش کنید."
+  DETECTED_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [ -n "${DETECTED_IP:-}" ]; then
+    sed -i "s|^ALLOWED_HOSTS=.*|ALLOWED_HOSTS=127.0.0.1,localhost,${DETECTED_IP}|" .env
+    echo "    ALLOWED_HOSTS شامل آی‌پی سرور شد: ${DETECTED_IP}"
+  else
+    echo "    فایل .env ساخته شد؛ ALLOWED_HOSTS را با آی‌پی/دامنه سرور ویرایش کنید."
+  fi
 fi
 
 # 5) دیتابیس و فایل‌های استاتیک
@@ -62,11 +68,11 @@ python manage.py collectstatic --noinput
 # 6) ساخت کاربر ادمین (اختیاری)
 if [ -n "${DJANGO_SUPERUSER_USERNAME:-}" ] && [ -n "${DJANGO_SUPERUSER_PASSWORD:-}" ]; then
   echo "==> ساخت کاربر ادمین: $DJANGO_SUPERUSER_USERNAME"
-  DJANGO_SUPERUSER_EMAIL="${DJANGO_SUPERUSER_EMAIL:-admin@example.com}" \
-    python manage.py createsuperuser --noinput \
-    --username "$DJANGO_SUPERUSER_USERNAME" \
-    --email "${DJANGO_SUPERUSER_EMAIL:-admin@example.com}" 2>/dev/null \
-    || echo "    (کاربر از قبل وجود دارد یا ساخته نشد)"
+  export DJANGO_SUPERUSER_PASSWORD
+  export DJANGO_SUPERUSER_USERNAME
+  export DJANGO_SUPERUSER_EMAIL="${DJANGO_SUPERUSER_EMAIL:-admin@localhost}"
+  python manage.py createsuperuser --noinput \
+    || echo "    (کاربر از قبل وجود دارد یا ساخته نشد — لاگ بالا را ببینید)"
 else
   echo "==> برای ساخت کاربر ادمین بعداً اجرا کنید: source venv/bin/activate && python manage.py createsuperuser"
 fi
@@ -89,5 +95,6 @@ fi
 
 echo ""
 echo "==> نصب کامل شد ✅"
-echo "    آدرس: http://<IP سرور>:$(grep -E '^GUNICORN_BIND=' .env | cut -d: -f2 || echo 8000)"
-echo "    پنل مدیریت: http://<IP سرور>:PORT/admin  (پنل‌ها را از اینجا اضافه کنید)"
+echo "    آدرس: http://<IP سرور>:$(awk -F: '/^GUNICORN_BIND=/{print $NF}' .env | tr -d '\r')"
+echo "    پنل مدیریت: همان آدرس + /admin  (پنل‌ها را از اینجا اضافه کنید)"
+echo "    سلامت سرویس: /healthz"

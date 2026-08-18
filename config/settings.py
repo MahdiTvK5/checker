@@ -86,11 +86,17 @@ STORAGES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# Public lookup rate limit (per IP).
+LOOKUP_RATE_LIMIT = config("LOOKUP_RATE_LIMIT", default=30, cast=int)
+LOOKUP_RATE_WINDOW = config("LOOKUP_RATE_WINDOW", default=60, cast=int)
+
 # Security hardening (active when not in DEBUG).
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 if not DEBUG:
     SESSION_COOKIE_SECURE = config("SESSION_COOKIE_SECURE", default=False, cast=bool)
     CSRF_COOKIE_SECURE = config("CSRF_COOKIE_SECURE", default=False, cast=bool)
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = "DENY"
 
 LOGGING = {
     "version": 1,
