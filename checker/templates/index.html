@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>استعلام وضعیت اشتراک</title>
+    <style>
+        :root {
+            --bg0: #061018;
+            --bg1: #0b1c28;
+            --card: rgba(14, 32, 46, .86);
+            --stroke: rgba(148, 211, 201, .16);
+            --accent: #2dd4bf;
+            --accent-2: #5eead4;
+            --text: #e8f4f1;
+            --muted: #8aa3ae;
+            --ok: #34d399;
+            --warn: #f5c16c;
+            --bad: #fb7185;
+            --pending: #7dd3fc;
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body {
+            margin: 0;
+            color: var(--text);
+            font-family: Tahoma, "Segoe UI", "IRANSans", "Vazirmatn", sans-serif;
+            background:
+                radial-gradient(1200px 600px at 90% -10%, rgba(45, 212, 191, .16), transparent 55%),
+                radial-gradient(900px 500px at -10% 110%, rgba(14, 116, 144, .22), transparent 50%),
+                linear-gradient(165deg, var(--bg0), var(--bg1) 55%, #07141d);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 22px 16px;
+        }
+        .wrap { width: 100%; max-width: 440px; }
+        .brand {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            margin-bottom: 18px;
+        }
+        .logo {
+            width: 46px; height: 46px; border-radius: 14px;
+            background: linear-gradient(145deg, #2dd4bf, #0e7490);
+            display: grid; place-items: center;
+            box-shadow: 0 10px 24px rgba(45, 212, 191, .28);
+        }
+        .brand h1 { margin: 0; font-size: 1.28rem; font-weight: 800; letter-spacing: -.3px; }
+        .brand p { margin: 3px 0 0; color: var(--muted); font-size: .82rem; }
+        .card {
+            background: var(--card);
+            border: 1px solid var(--stroke);
+            border-radius: 22px;
+            padding: 22px 20px 20px;
+            backdrop-filter: blur(14px);
+            box-shadow: 0 24px 60px rgba(0, 0, 0, .38);
+        }
+        label.field {
+            display: block; color: var(--muted); font-size: .8rem; margin-bottom: 8px;
+        }
+        .input-row { position: relative; }
+        input[type=text] {
+            width: 100%;
+            padding: 14px 14px;
+            border-radius: 14px;
+            border: 1px solid #2a4553;
+            background: #07141d;
+            color: var(--text);
+            font-size: .95rem;
+            text-align: left;
+            direction: ltr;
+            outline: none;
+            transition: border-color .15s, box-shadow .15s;
+        }
+        input[type=text]:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 4px rgba(45, 212, 191, .14);
+        }
+        button {
+            width: 100%;
+            margin-top: 12px;
+            padding: 13px;
+            border: 0;
+            border-radius: 14px;
+            background: linear-gradient(180deg, var(--accent-2), var(--accent));
+            color: #042f2e;
+            font-weight: 800;
+            font-size: 1rem;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        button:hover { filter: brightness(1.06); }
+        button:disabled { opacity: .65; cursor: progress; }
+        .hint { margin: 10px 0 0; color: var(--muted); font-size: .75rem; text-align: center; }
+        .alert {
+            margin-top: 16px; padding: 12px 14px; border-radius: 14px; font-size: .9rem; line-height: 1.7;
+        }
+        .alert.error {
+            background: rgba(251, 113, 133, .1);
+            border: 1px solid rgba(251, 113, 133, .35);
+            color: #fecdd3;
+        }
+        .result { margin-top: 18px; }
+        .head {
+            display: flex; align-items: center; justify-content: space-between; gap: 10px;
+            padding-bottom: 14px; border-bottom: 1px solid var(--stroke);
+        }
+        .user { font-weight: 800; font-size: 1.05rem; }
+        .panel-name { color: var(--muted); font-size: .78rem; margin-top: 3px; }
+        .badge {
+            flex-shrink: 0;
+            font-size: .75rem;
+            font-weight: 800;
+            padding: 6px 10px;
+            border-radius: 999px;
+        }
+        .status-active { background: rgba(52, 211, 153, .15); color: var(--ok); }
+        .status-expired, .status-depleted, .status-disabled { background: rgba(251, 113, 133, .14); color: var(--bad); }
+        .status-pending { background: rgba(125, 211, 252, .14); color: var(--pending); }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 14px;
+        }
+        .stat {
+            background: #07141d;
+            border: 1px solid #1e3644;
+            border-radius: 14px;
+            padding: 12px 12px 11px;
+        }
+        .stat .k { color: var(--muted); font-size: .75rem; margin-bottom: 6px; }
+        .stat .v { font-weight: 800; font-size: .98rem; }
+        .kind-ok { color: var(--ok); }
+        .kind-warn { color: var(--warn); }
+        .kind-bad, .kind-expired { color: var(--bad); }
+        .kind-pending { color: var(--pending); }
+        .kind-unlimited, .kind-muted { color: var(--text); }
+        .usage { margin-top: 12px; }
+        .usage-top {
+            display: flex; justify-content: space-between; color: var(--muted); font-size: .78rem; margin-bottom: 8px;
+        }
+        .bar { background: #07141d; border-radius: 999px; height: 9px; overflow: hidden; border: 1px solid #1e3644; }
+        .bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--ok), var(--accent)); }
+        .bar.high > span { background: linear-gradient(90deg, var(--warn), var(--bad)); }
+        footer { margin-top: 14px; text-align: center; color: #5d7682; font-size: .72rem; }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="brand">
+            <div class="logo" aria-hidden="true">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                    <path d="M12 3l7 3v5c0 5-3.2 8.4-7 10-3.8-1.6-7-5-7-10V6l7-3z" stroke="#042f2e" stroke-width="1.8"/>
+                    <path d="M8.5 12.2l2.3 2.3 4.7-5" stroke="#042f2e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+            </div>
+            <div>
+                <h1>استعلام اشتراک</h1>
+                <p>مانده حجم و زمان کانفیگ را ببینید</p>
+            </div>
+        </div>
+
+        <div class="card">
+            <form method="post" id="lookup-form">
+                {% csrf_token %}
+                <label class="field" for="vless_link">لینک یا شناسه کانفیگ</label>
+                <div class="input-row">
+                    <input id="vless_link" type="text" name="vless_link"
+                           placeholder="vless://  vmess://  trojan://  یا ایمیل"
+                           value="{{ vless_link|default:'' }}" autocomplete="off" maxlength="512" autofocus>
+                </div>
+                <button type="submit" id="submit-btn">استعلام وضعیت</button>
+            </form>
+            <p class="hint">لینک کامل را از برنامه بگذارید؛ UUID یا ایمیل هم قبول است.</p>
+
+            {% if error %}
+            <div class="alert error">{{ error }}</div>
+            {% endif %}
+
+            {% if result %}
+            <div class="result">
+                <div class="head">
+                    <div>
+                        <div class="user">{{ result.username }}</div>
+                        {% if result.panel %}<div class="panel-name">{{ result.panel }}</div>{% endif %}
+                    </div>
+                    <span class="badge status-{{ result.status }}">{{ result.status_label }}</span>
+                </div>
+                <div class="grid">
+                    <div class="stat">
+                        <div class="k">زمان باقی‌مانده</div>
+                        <div class="v kind-{{ result.time_kind }}">{{ result.remaining_time }}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="k">حجم باقی‌مانده</div>
+                        <div class="v kind-{{ result.volume_kind }}">
+                            {{ result.remaining_volume }}{% if result.remaining_volume != 'نامحدود' %} GB{% endif %}
+                        </div>
+                    </div>
+                    <div class="stat">
+                        <div class="k">حجم کل</div>
+                        <div class="v">{{ result.total }}{% if result.total != 'نامحدود' %} GB{% endif %}</div>
+                    </div>
+                    <div class="stat">
+                        <div class="k">مصرف‌شده</div>
+                        <div class="v">{{ result.used }} GB</div>
+                    </div>
+                </div>
+                {% if result.percent is not None %}
+                <div class="usage">
+                    <div class="usage-top">
+                        <span>مصرف حجم</span>
+                        <span>{{ result.percent }}٪</span>
+                    </div>
+                    <div class="bar {% if result.percent >= 80 %}high{% endif %}"><span style="width: {{ result.percent }}%"></span></div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+        <footer>اطلاعات فقط برای صاحب اشتراک نمایش داده می‌شود</footer>
+    </div>
+    <script>
+        document.getElementById('lookup-form').addEventListener('submit', function () {
+            var btn = document.getElementById('submit-btn');
+            btn.disabled = true;
+            btn.textContent = 'در حال استعلام...';
+        });
+    </script>
+</body>
+</html>

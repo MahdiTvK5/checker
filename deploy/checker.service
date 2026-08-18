@@ -1,0 +1,15 @@
+[Unit]
+Description=Config Checker (Django + Gunicorn)
+After=network.target
+
+[Service]
+User=__USER__
+Group=__USER__
+WorkingDirectory=__DIR__
+EnvironmentFile=__DIR__/.env
+ExecStart=__DIR__/venv/bin/gunicorn config.wsgi:application --bind ${GUNICORN_BIND} --workers ${GUNICORN_WORKERS} --timeout 20 --max-requests 500 --max-requests-jitter 50
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
