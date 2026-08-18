@@ -3,6 +3,10 @@ from django.contrib import admin
 
 from .models import Panel
 
+admin.site.site_header = "مدیریت استعلام اشتراک"
+admin.site.site_title = "استعلام"
+admin.site.index_title = "پنل‌های X-UI را از اینجا اضافه کنید"
+
 
 class PanelForm(forms.ModelForm):
     password = forms.CharField(
@@ -39,8 +43,14 @@ class PanelForm(forms.ModelForm):
 class PanelAdmin(admin.ModelAdmin):
     form = PanelForm
     list_display = ("name", "url", "username", "is_active", "order", "updated_at")
+    list_display_links = ("name", "url")
     list_editable = ("is_active", "order")
     list_filter = ("is_active", "verify_ssl")
     search_fields = ("name", "url", "username")
     ordering = ("order", "id")
     readonly_fields = ("created_at", "updated_at")
+    fieldsets = (
+        ("مشخصات", {"fields": ("name", "url", "order", "is_active")}),
+        ("ورود به پنل", {"fields": ("username", "password", "verify_ssl")}),
+        ("زمان", {"fields": ("created_at", "updated_at")}),
+    )
