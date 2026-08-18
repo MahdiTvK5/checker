@@ -7,7 +7,7 @@
 #
 # گزینه‌های اختیاری از طریق متغیر محیطی:
 #   PIP_INDEX_URL=<میرور-pip-ایرانی>   برای نصب وابستگی‌ها از میرور داخلی
-#   INSTALL_SERVICE=no                  برای رد کردن نصب سرویس systemd
+#   CHECKER_PORT=8088                    پورت سرویس (اگر ندهید، موقع نصب می‌پرسد)
 #   SERVICE_USER=<user>                 کاربری که سرویس با آن اجرا شود
 #   DJANGO_SUPERUSER_USERNAME / DJANGO_SUPERUSER_PASSWORD  ساخت خودکار ادمین
 set -euo pipefail
@@ -19,6 +19,60 @@ PYTHON="${PYTHON:-python3}"
 if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
 
 echo "==> نصب در مسیر: $APP_DIR"
+
+is_valid_port() {
+  [[ "${1:-}" =~ ^[0-9]+$ ]] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+port_in_use() {
+  local p="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | grep -Eq ":${p}[[:space:]]"
+    return $?
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | grep -Eq ":${p}[[:space:]]"
+    return $?
+  fi
+  return 1
+}
+
+ask_listen_port() {
+  # غیرتعاملی: CHECKER_PORT=9080 ./install.sh
+  REQUESTED_PORT="${CHECKER_PORT:-${PORT:-}}"
+  if [ -n "${REQUESTED_PORT}" ]; then
+    if ! is_valid_port "$REQUESTED_PORT"; then
+      echo "خطا: پورت ${REQUESTED_PORT} نامعتبر است (باید 1 تا 65535 باشد)." >&2
+      exit 1
+    fi
+    LISTEN_PORT="$REQUESTED_PORT"
+    return
+  fi
+  if [ ! -t 0 ]; then
+    echo "خطا: ترمینال تعاملی نیست. پورت را این‌طور مشخص کنید: CHECKER_PORT=9080 ./install.sh" >&2
+    exit 1
+  fi
+  echo ""
+  echo "==> پورت سرویس را وارد کنید"
+  echo "    اگر سرویس دیگری روی 8000 دارید، پورت آزاد دیگری بگذارید (مثلاً 8088 یا 9000)."
+  while true; do
+    printf "    پورت: "
+    read -r LISTEN_PORT || true
+    LISTEN_PORT="${LISTEN_PORT//[[:space:]]/}"
+    if ! is_valid_port "$LISTEN_PORT"; then
+      echo "    پورت باید یک عدد بین 1 و 65535 باشد."
+      continue
+    fi
+    if port_in_use "$LISTEN_PORT"; then
+      echo "    پورت $LISTEN_PORT الان اشغال است. یکی دیگر انتخاب کنید."
+      continue
+    fi
+    break
+  done
+}
+
+ask_listen_port
+echo "==> سرویس روی پورت ${LISTEN_PORT} بالا می‌آید"
 
 # 1) پیش‌نیازهای سیستمی
 if command -v apt-get >/dev/null 2>&1; then
@@ -59,6 +113,12 @@ if [ ! -f .env ]; then
     echo "    فایل .env ساخته شد؛ ALLOWED_HOSTS را با آی‌پی/دامنه سرور ویرایش کنید."
   fi
 fi
+if grep -qE '^GUNICORN_BIND=' .env; then
+  sed -i "s|^GUNICORN_BIND=.*|GUNICORN_BIND=0.0.0.0:${LISTEN_PORT}|" .env
+else
+  echo "GUNICORN_BIND=0.0.0.0:${LISTEN_PORT}" >> .env
+fi
+echo "    GUNICORN_BIND=0.0.0.0:${LISTEN_PORT}"
 
 # 5) دیتابیس و فایل‌های استاتیک
 echo "==> اجرای migrate و collectstatic"
@@ -95,6 +155,6 @@ fi
 
 echo ""
 echo "==> نصب کامل شد ✅"
-echo "    آدرس: http://<IP سرور>:$(awk -F: '/^GUNICORN_BIND=/{print $NF}' .env | tr -d '\r')"
-echo "    پنل مدیریت: همان آدرس + /admin  (پنل‌ها را از اینجا اضافه کنید)"
-echo "    سلامت سرویس: /healthz"
+echo "    آدرس: http://<IP سرور>:${LISTEN_PORT}"
+echo "    پنل مدیریت: http://<IP سرور>:${LISTEN_PORT}/admin"
+echo "    سلامت سرویس: http://<IP سرور>:${LISTEN_PORT}/healthz"
