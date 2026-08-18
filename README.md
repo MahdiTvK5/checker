@@ -81,7 +81,39 @@ python manage.py createsuperuser
 
 ---
 
-## اجرای دستی (بدون systemd)
+## پشت دامنه (Nginx)
+
+اگر قبلاً روی پورت `8005` بوده و الان سرویس روی `8006` است، در کانفیگ nginx همان پورت را عوض کنید:
+
+```bash
+grep -RIn "8005" /etc/nginx/
+```
+
+فایل پیدا‌شده را باز کنید و `proxy_pass` را به `8006` تغییر دهید، مثلاً:
+
+```nginx
+proxy_pass http://127.0.0.1:8006;
+```
+
+بعد:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+در `/root/checker/.env` دامنه را هم اضافه کنید (دامنه را عوض کنید):
+
+```env
+ALLOWED_HOSTS=DOMAIN.com,www.DOMAIN.com,127.0.0.1
+CSRF_TRUSTED_ORIGINS=https://DOMAIN.com,https://www.DOMAIN.com
+GUNICORN_BIND=127.0.0.1:8006
+```
+
+سپس سرویس را ری‌استارت کنید: `systemctl restart checker`
+
+نمونهٔ کامل در `deploy/nginx.conf.example` است.
+
+---
 ```bash
 ./run.sh        # gunicorn روی GUNICORN_BIND در فایل .env
 ```
